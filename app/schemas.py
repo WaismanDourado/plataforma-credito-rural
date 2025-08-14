@@ -1,14 +1,26 @@
 from pydantic import BaseModel
+from typing import List, Optional
 
-class PredictionCreate(BaseModel):
-    farmer_name: str
-    income: float
-    crop_type: str
+# ---Data Models for the Backend (CRUD, etc.)---
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
 
-class PredictionResponse(BaseModel):
+class User(BaseModel):
     id: int
-    approval_probability: float
-    approved: bool
+    username: str
+    email: str
 
 class Config:
-    orm_model = True
+    orm_model = True # Enable ORM mapping for Pydantic
+
+# New Model for Credit Forecasting
+class CreditApplication(BaseModel):
+    income: float
+    years_farming: int
+    area_hectares: float
+
+class CreditPredictionResult(BaseModel):
+    predicted_approval: int
+    probability: float
