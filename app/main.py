@@ -1,12 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 import pandas as pd
 import os
 
-from .import schemas
-from .database import engine, Base, get_db
-from .import ml_model
-#from .crud import get_user, create_user
+from . import schemas
+from . database import engine, Base, get_db
+from . import ml_model
+from . import crud
+from . import auth
 
 if not os.path.exists(ml_model.MODEL_DIR):
     os.makedirs(ml_model.MODEL_DIR, exist_ok=True)
@@ -20,9 +22,43 @@ app = FastAPI(title="Plataforma de Previsão de Crédito Rural")
 credit_model, credit_scaler = ml_model.load_model_and_scaler()
 print("Modelo de previsão de crédito carregado e pronto!")
 
+auth_router = APIRouter(
+    prefix="/auth", 
+    tags=["Autenticação"]
+)
+
 @app.get("/", tags=["Status"])
 async def read_root():
     return {"message": "Bem-vindo à Plataforma de Previsão de Crédito Rural! Backend OK."}
+
+@auth_router.post("/token", response_model=schemas.Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    user = auth.authenticate_user(db, email=form_data.username, password=form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciais inválidas",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=auth.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/users/", response_model=schemas.User, tags=["Usuários"], status_code=status.HTTP_201_CREATED)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    db_user = crud.get_user_by_email(db, email=user.email)
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email já cadastrado")
+    return crud.create_user(db=db, user=user)
+
+@app.get("/users/me", response_model=schemas.User, tags=["Usuários"])
+async def read_users_me(current_user: schemas.User = Depends(auth.get_current_active_user)):
+    return current_user
 
 @app.post("/predict/credit", response_model=schemas.CreditPredictionResult, tags=["Previsão ML"])
 async def predict_credit_approval(
@@ -49,3 +85,5 @@ async def predict_credit_approval(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erro ao processar a previsão: {str(e)}"
         )
+
+app.include_router(auth_router)

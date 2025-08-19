@@ -36,6 +36,17 @@ def verify_token(token: str, credentials_exception):
     except JWTError:
         raise credentials_exception
     return token_data
+
+def authenticate_user(db: Session, email: str, password: str):
+    user = crud.get_user_by_email(db, email=email)
+    if not user:
+        return False
+    if not crud.verify_password(password, user.hashed_password):
+        return False
+    if not user.is_active:
+        return False
+    return user
+
 async def get_current_user(token: str = Depends(OAuth2_scheme), db: Session = Depends(get_db)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

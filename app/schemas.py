@@ -12,7 +12,7 @@ class UserCreate(UserBase):
 class User(UserBase):
     id: int
     username: str
-    is_active = True
+    is_active: bool = True
 
 class Config:
     orm_model = True # Enable ORM mapping for Pydantic
