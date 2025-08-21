@@ -1,6 +1,9 @@
 from fastapi import FastAPI, Depends, HTTPException, status, APIRouter
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from datetime import timedelta
+from typing import Annotated
 import pandas as pd
 import os
 
@@ -8,6 +11,7 @@ from . import schemas
 from . database import engine, Base, get_db
 from . import ml_model
 from . import crud
+from . import models
 from . import auth
 
 if not os.path.exists(ml_model.MODEL_DIR):
@@ -16,6 +20,27 @@ if not os.path.exists(ml_model.MODEL_DIR):
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Plataforma de Previsão de Crédito Rural")
+
+# --- CORS Middleware Configuration ---
+origins = [
+    # Desenvolvimento
+    "http://localhost",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080"
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+
+    # Produção
+    "https://meu-dominio.com"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Load the ML model at application startup ---
 # This ensures that the model is loaded only once when FastAPI starts
