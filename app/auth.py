@@ -1,116 +1,206 @@
-from fastapi import APIRouter, HTTPException, Depends, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+"""
+Authentication module for the application.
+
+Handles user registration, login, token generation, and user verification.
+Uses SQLAlchemy ORM for database operations and JWT for token management.
+"""
+
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
-import sqlite3
 
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
+from .config import settings
+from .database import get_db
+from .database.models import User
 from .schemas import user_schemas
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================
+# CONFIGURATION
+# ============================================
 
 router = APIRouter(tags=["auth"])
 
-SECRET_KEY = "sua-chave-secreta-super-segura-aqui-mude-em-prod"  # Mude para env var
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# Get configuration from settings
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
+# Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+# HTTP Bearer security
+security = HTTPBearer()
 
-
-# SQLite setup (integre com seu test.db existente)
-def get_db():
-    conn = sqlite3.connect('test.db')
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+# ============================================
+# PASSWORD UTILITIES
+# ============================================
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain password against a hashed password.
+    
+    Args:
+        plain_password (str): The plain text password to verify.
+        hashed_password (str): The hashed password to compare against.
+    
+    Returns:
+        bool: True if password matches, False otherwise.
+    """
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password: str) -> str:
+    """
+    Hash a plain text password.
+    
+    Args:
+        password (str): The plain text password to hash.
+    
+    Returns:
+        str: The hashed password.
+    """
     return pwd_context.hash(password)
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+# ============================================
+# TOKEN UTILITIES
+# ============================================
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    Create a JWT access token.
+    
+    Args:
+        data (dict): The data to encode in the token.
+        expires_delta (Optional[timedelta]): Custom expiration time.
+    
+    Returns:
+        str: The encoded JWT token.
+    """
     to_encode = data.copy()
+    
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
+    
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    
     return encoded_jwt
 
-security = HTTPBearer()
+# ============================================
+# DEPENDENCY INJECTION
+# ============================================
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+) -> user_schemas.User:
+    """
+    Get the current authenticated user from JWT token.
+    
+    Args:
+        credentials (HTTPAuthorizationCredentials): The HTTP Bearer token.
+        db (Session): Database session.
+    
+    Returns:
+        user_schemas.User: The authenticated user.
+    
+    Raises:
+        HTTPException: If token is invalid or user not found.
+    """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Não foi possível validar credenciais",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
     try:
+        # Decode JWT token
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
+        
         if email is None:
+            logger.warning("Token does not contain email claim")
             raise credentials_exception
-    except JWTError:
+            
+    except JWTError as e:
+        logger.warning(f"JWT decode error: {e}")
         raise credentials_exception
     
-    # ✅ Retornar um objeto User com os campos corretos
-    return user_schemas.User(
-        id=1,  # Você precisará buscar do banco de dados
-        email=email,
-        username="username",  # Você precisará buscar do banco de dados
-        is_active=True
-    )
-
-@router.post("/register", response_model=user_schemas.Token)
-def register(user: user_schemas.UserCreate, conn = Depends(get_db)):
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            username TEXT UNIQUE NOT NULL,
-            hashed_password TEXT NOT NULL,
-            is_active BOOLEAN DEFAULT 1
+    try:
+        # Query user from database
+        user = db.query(User).filter(User.email == email).first()
+        
+        if user is None:
+            logger.warning(f"User not found for email: {email}")
+            raise credentials_exception
+        
+        if not user.is_active:
+            logger.warning(f"User is inactive: {email}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuário inativo"
+            )
+        
+        # Return user schema
+        return user_schemas.User(
+            id=user.id,
+            email=user.email,
+            username=user.username,
+            is_active=user.is_active
         )
-    """)
-    cursor.execute("SELECT email FROM users WHERE email = ?", (user.email,))
-    if cursor.fetchone():
-        raise HTTPException(status_code=400, detail="Email já cadastrado")
-    hashed_password = get_password_hash(user.password)
-    cursor.execute(
-        "INSERT INTO users (email, username, hashed_password, is_active) VALUES (?, ?, ?, ?)", 
-        (user.email, user.username, hashed_password, True)
-    )
-    conn.commit()
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
-    return user_schemas.Token(access_token=access_token, token_type="bearer")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving user: {e}")
+        raise credentials_exception
 
-@router.post("/login", response_model=user_schemas.Token)
-def login(user: user_schemas.UserLogin, conn = Depends(get_db)):
-    cursor = conn.cursor()
-    cursor.execute("SELECT hashed_password FROM users WHERE email = ?", (user.email,))
-    db_user = cursor.fetchone()
+# ============================================
+# AUTHENTICATION ROUTES
+# ============================================
+
+@router.post(
+    "/register",
+    response_model=user_schemas.Token,
+    status_code=status.HTTP_201_CREATED,
+    summary="Registrar novo usuário",
+    description="Cria uma nova conta de usuário e retorna um token de acesso"
+)
+def register(
+    user: user_schemas.UserCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Register a new user.
     
-    if not db_user or not verify_password(user.password, db_user[0]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Credenciais incorretas"
-        )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, 
-        expires_delta=access_token_expires
-    )
-    return user_schemas.Token(access_token=access_token, token_type="bearer")
-
-@router.get("/me", response_model=user_schemas.User)
-def read_users_me(current_user: user_schemas.User = Depends(get_current_user)):
-    return current_user
+    **Parâmetros:**
+    - `email`: Email único do usuário
+    - `username`: Nome de usuário único
+    - `password`: Senha (será hasheada)
+    
+    **Retorna:**
+    - `access_token`: Token JWT para autenticação
+    - `token_type`: Tipo do token (bearer)
+    
+    **Exemplo de uso:**
+json
+    {
+        "email": "user@example.com",
+        "username": "username",
+        "password": "senha_segura"
+    }
+    """
