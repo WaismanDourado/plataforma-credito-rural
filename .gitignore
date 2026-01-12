@@ -194,3 +194,8 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/python,visualstudiocodetest.db
 *.db
+
+
+*.joblib
+*.xlsx
+app/models/

@@ -10,13 +10,13 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, classification_report, roc_curve
 )
-from xgboost import XGBClassifier
+from xgboost import XGBClassifier # type: ignore
 import warnings
 warnings.filterwarnings('ignore')
 
-# ============================================================================
+# 
 # CONFIGURAÇÃO DE LOGGING
-# ============================================================================
+# 
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,9 +24,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============================================================================
+# 
 # CONFIGURAÇÃO DE CAMINHOS
-# ============================================================================
+# 
 
 MODEL_DIR = Path("app/models")
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,10 +36,11 @@ XGBOOST_MODEL_PATH = MODEL_DIR / "xgboost_model.joblib"
 LABEL_ENCODERS_PATH = MODEL_DIR / "label_encoders.joblib"
 BEST_MODEL_PATH = MODEL_DIR / "best_model.joblib"
 BEST_MODEL_NAME_PATH = MODEL_DIR / "best_model_name.txt"
+FEATURE_COLUMNS_PATH = MODEL_DIR / "feature_columns.joblib" # NOVO: Caminho para salvar as colunas de features
 
-# ============================================================================
+# 
 # VARIÁVEIS CATEGÓRICAS E NUMÉRICAS
-# ============================================================================
+# 
 
 CATEGORICAL_FEATURES = [
     'regiao',
@@ -101,9 +102,9 @@ NUMERIC_FEATURES = [
     'taxa_juros_estimada_aa'
 ]
 
-# ============================================================================
+# 
 # FUNÇÕES DE PRÉ-PROCESSAMENTO
-# ============================================================================
+# 
 
 def load_data(filepath):
     """Carrega dados do arquivo XLSX."""
@@ -121,11 +122,10 @@ def preprocess_data(df, fit_encoders=True, label_encoders=None):
     Faz pré-processamento dos dados:
     - Codifica variáveis categóricas
     - Remove colunas desnecessárias
-    - Retorna X e y
+    - Retorna X e y (ou apenas X se y não estiver presente)
     """
     logger.info("Iniciando pré-processamento...")
     
-    # Criar cópia para não modificar original
     df_processed = df.copy()
     
     # Remover coluna 'id' se existir
@@ -135,7 +135,7 @@ def preprocess_data(df, fit_encoders=True, label_encoders=None):
     # Codificar variáveis categóricas
     if fit_encoders:
         label_encoders = {}
-        logger.info("Codificando variáveis categóricas...")
+        logger.info("Codificando variáveis categóricas (fit_encoders=True)...")
         
         for col in CATEGORICAL_FEATURES:
             if col in df_processed.columns:
@@ -143,32 +143,47 @@ def preprocess_data(df, fit_encoders=True, label_encoders=None):
                 df_processed[col] = le.fit_transform(df_processed[col].astype(str))
                 label_encoders[col] = le
                 logger.info(f"  ✓ {col}: {len(le.classes_)} classes")
+            else:
+                logger.warning(f"Coluna categórica '{col}' não encontrada no DataFrame para fit_encoders=True. Ignorando.")
     else:
-        logger.info("Usando encoders fornecidos...")
+        logger.info("Codificando variáveis categóricas (fit_encoders=False)...")
         for col in CATEGORICAL_FEATURES:
             if col in df_processed.columns:
-                df_processed[col] = label_encoders[col].transform(df_processed[col].astype(str))
+                if col not in label_encoders:
+                    raise ValueError(f"Encoder para a coluna '{col}' não encontrado para pré-processamento.")
+                le = label_encoders[col]
+                
+                # Handle unseen categories during prediction
+                unseen_values = [val for val in df_processed[col].astype(str) if val not in le.classes_]
+                if unseen_values:
+                    raise ValueError(f"Valor(es) não reconhecido(s) para a categoria '{col}': {', '.join(unseen_values)}. Valores esperados: {', '.join(le.classes_)}")
+                
+                df_processed[col] = le.transform(df_processed[col].astype(str))
+            else:
+                logger.warning(f"Coluna categórica '{col}' não encontrada no DataFrame para pré-processamento (fit_encoders=False). Ignorando.")
     
     # Separar features e target
     target_col = 'credito_aprovado'
+    y = None
     
     if target_col in df_processed.columns:
-        # Codificar target (sim/não -> 1/0)
         y = (df_processed[target_col] == 'sim').astype(int)
         X = df_processed.drop(target_col, axis=1)
+        logger.info(f"  Distribuição do target: {y.value_counts().to_dict()}")
     else:
-        raise ValueError(f"Coluna '{target_col}' não encontrada!")
+        X = df_processed.copy() # No target column, so all are features
+        logger.info(f"  Coluna '{target_col}' não encontrada. Assumindo modo de previsão.")
     
     logger.info(f"Pré-processamento concluído!")
     logger.info(f"  X shape: {X.shape}")
-    logger.info(f"  y shape: {y.shape}")
-    logger.info(f"  Distribuição do target: {y.value_counts().to_dict()}")
+    if y is not None:
+        logger.info(f"  y shape: {y.shape}")
     
     return X, y, label_encoders if fit_encoders else None
 
-# ============================================================================
+# 
 # FUNÇÕES DE TREINAMENTO
-# ============================================================================
+# 
 
 def train_models(X_train, X_test, y_train, y_test):
     """Treina GBT e XGBoost."""
@@ -276,11 +291,25 @@ def compare_models(gbt_metrics, xgb_metrics):
     
     return best_model
 
-# ============================================================================
+# 
 # FUNÇÕES DE SALVAMENTO E CARREGAMENTO
-# ============================================================================
+# 
 
-def save_models(gbt_model, xgb_model, label_encoders, best_model_name):
+# Global variable to store feature names in the correct order
+_FEATURE_COLUMNS = None
+
+def _load_feature_columns():
+    """Loads the list of feature columns in the correct order."""
+    global _FEATURE_COLUMNS
+    if _FEATURE_COLUMNS is None:
+        if FEATURE_COLUMNS_PATH.exists():
+            _FEATURE_COLUMNS = joblib.load(FEATURE_COLUMNS_PATH)
+            logger.info(f"✓ Feature columns loaded from {FEATURE_COLUMNS_PATH}")
+        else:
+            logger.warning(f"Feature columns file not found at {FEATURE_COLUMNS_PATH}. This might cause issues if model was trained.")
+    return _FEATURE_COLUMNS
+
+def save_models(gbt_model, xgb_model, label_encoders, best_model_name, feature_columns): # MODIFICADO: Adicionado feature_columns
     """Salva os modelos e encoders."""
     
     logger.info(f"\n{'='*70}")
@@ -296,6 +325,9 @@ def save_models(gbt_model, xgb_model, label_encoders, best_model_name):
         
         joblib.dump(label_encoders, LABEL_ENCODERS_PATH)
         logger.info(f"✓ Label Encoders salvos em {LABEL_ENCODERS_PATH}")
+
+        joblib.dump(feature_columns, FEATURE_COLUMNS_PATH) # NOVO: Salvar as colunas de features
+        logger.info(f"✓ Feature columns salvos em {FEATURE_COLUMNS_PATH}")
         
         # Salvar nome do melhor modelo
         with open(BEST_MODEL_NAME_PATH, 'w') as f:
@@ -311,29 +343,30 @@ def save_models(gbt_model, xgb_model, label_encoders, best_model_name):
         logger.error(f"Erro ao salvar modelos: {e}")
         raise
 
-def load_best_model():
+def load_best_model(): # MODIFICADO: Retorna feature_columns
     """Carrega o melhor modelo treinado."""
     try:
-        if not BEST_MODEL_PATH.exists():
-            logger.warning("Modelo não encontrado. Treinando novo modelo...")
+        if not BEST_MODEL_PATH.exists() or not FEATURE_COLUMNS_PATH.exists(): # Verifica também feature_columns
+            logger.warning("Modelo ou feature columns não encontrados. Treinando novo modelo...")
             train_and_save_models()
         
         model = joblib.load(BEST_MODEL_PATH)
         label_encoders = joblib.load(LABEL_ENCODERS_PATH)
+        feature_columns = _load_feature_columns() # Carrega as colunas de features
         
         with open(BEST_MODEL_NAME_PATH, 'r') as f:
             model_name = f.read().strip()
         
-        logger.info(f"✓ Modelo {model_name} carregado com sucesso!")
-        return model, label_encoders, model_name
+        logger.info(f"✓ Modelo {model_name}, Label Encoders e Feature Columns carregados com sucesso!")
+        return model, label_encoders, model_name, feature_columns # Retorna feature_columns
         
     except Exception as e:
         logger.error(f"Erro ao carregar modelo: {e}")
         raise
 
-# ============================================================================
-# FUNÇÃO DE PREVISÃO (PARA FASTAPI)
-# ============================================================================
+# 
+# FUNÇÃO DE PREVISÃO (PARA FASTAPI) - ORIGINAL
+# 
 
 def predict_credit_approval(user_data: dict):
     """
@@ -346,13 +379,13 @@ def predict_credit_approval(user_data: dict):
         Dicionário com previsão e probabilidade
     """
     try:
-        # Carregar modelo e encoders
-        model, label_encoders, model_name = load_best_model()
+        # Carregar modelo e encoders (agora retorna feature_columns, mas não é usado aqui)
+        model, label_encoders, model_name, _ = load_best_model() 
         
         # Converter dados do usuário em DataFrame
         df_user = pd.DataFrame([user_data])
         
-        # Pré-processar dados
+        # Pré-processar dados (agora robusto para modo de previsão)
         X_user, _, _ = preprocess_data(df_user, fit_encoders=False, label_encoders=label_encoders)
         
         # Fazer previsão
@@ -374,9 +407,9 @@ def predict_credit_approval(user_data: dict):
             'status': 'Erro na previsão'
         }
 
-# ============================================================================
+# 
 # FUNÇÃO PRINCIPAL DE TREINAMENTO
-# ============================================================================
+# 
 
 def train_and_save_models(data_path="dados_credito_rural.xlsx"):
     """Função principal que treina e salva os modelos."""
@@ -391,6 +424,7 @@ def train_and_save_models(data_path="dados_credito_rural.xlsx"):
         
         # 2. Pré-processar
         X, y, label_encoders = preprocess_data(df, fit_encoders=True)
+        feature_columns = X.columns.tolist() # NOVO: Captura a ordem das colunas
         
         # 3. Dividir em treino e teste
         logger.info("\nDividindo dados em treino (80%) e teste (20%)...")
@@ -411,7 +445,7 @@ def train_and_save_models(data_path="dados_credito_rural.xlsx"):
         best_model = compare_models(gbt_metrics, xgb_metrics)
         
         # 7. Salvar modelos
-        save_models(gbt_model, xgb_model, label_encoders, best_model)
+        save_models(gbt_model, xgb_model, label_encoders, best_model, feature_columns) # MODIFICADO: Passa feature_columns
         
         logger.info("\n" + "="*70)
         logger.info("✓ TREINAMENTO CONCLUÍDO COM SUCESSO!")
@@ -423,9 +457,122 @@ def train_and_save_models(data_path="dados_credito_rural.xlsx"):
         logger.error(f"\n✗ Erro durante o treinamento: {e}")
         raise
 
-# ============================================================================
+# 
+# NOVAS FUNÇÕES PARA PREVISÃO ROBUSTA
+# 
+
+def validate_input_data(user_data: dict):
+    """
+    Valida se os dados de entrada do usuário contêm todas as features necessárias.
+    
+    Args:
+        user_data: Dicionário com os dados do usuário.
+        
+    Raises:
+        ValueError: Se algum campo obrigatório estiver faltando.
+    """
+    all_expected_features = set(CATEGORICAL_FEATURES + NUMERIC_FEATURES)
+    missing_features = [f for f in all_expected_features if f not in user_data]
+    
+    if missing_features:
+        raise ValueError(f"Dados de entrada incompletos. Campos faltando: {', '.join(missing_features)}")
+    
+    logger.info("✓ Dados de entrada validados com sucesso.")
+    return True
+
+def _align_features_for_prediction(df_input: pd.DataFrame, feature_columns: list) -> pd.DataFrame:
+    """
+    Garante que o DataFrame de entrada para previsão tenha as mesmas colunas
+    e na mesma ordem que o DataFrame de treinamento.
+    
+    Args:
+        df_input: DataFrame com os dados de entrada do usuário.
+        feature_columns: Lista de nomes das colunas na ordem esperada pelo modelo.
+        
+    Returns:
+        pd.DataFrame: DataFrame com as colunas alinhadas.
+        
+    Raises:
+        ValueError: Se houver colunas faltando ou inesperadas após o pré-processamento.
+    """
+    # Adicionar colunas que podem estar faltando no input (e.g., se um campo numérico era 0)
+    # validate_input_data já exige todos, mas isso garante a ordem e preenche se algo passou.
+    for col in feature_columns:
+        if col not in df_input.columns:
+            df_input[col] = 0 # Preenche com 0, assumindo que 0 é um valor razoável para features numéricas ausentes
+                             # ou para features categóricas que seriam 0 após encoding se não estivessem presentes.
+    
+    # Remover colunas que estão no input mas não estavam no treino
+    extra_cols = [col for col in df_input.columns if col not in feature_columns]
+    if extra_cols:
+        logger.warning(f"Colunas extras encontradas no input e removidas: {', '.join(extra_cols)}")
+        df_input = df_input.drop(columns=extra_cols)
+        
+    # Reordenar as colunas
+    try:
+        df_aligned = df_input[feature_columns]
+    except KeyError as e:
+        raise ValueError(f"Erro ao alinhar colunas para previsão. Coluna faltando ou inesperada após pré-processamento: {e}")
+        
+    return df_aligned
+
+def predict_credit_approval_detailed(user_data: dict):
+    """
+    Faz uma previsão detalhada de aprovação de crédito para um único usuário.
+    Inclui validação de entrada e pré-processamento robusto.
+    
+    Args:
+        user_data: Dicionário com os dados do usuário para previsão.
+        
+    Returns:
+        dict: Dicionário com o status da previsão, probabilidades e detalhes adicionais.
+        
+    Raises:
+        ValueError: Se houver problemas com os dados de entrada ou pré-processamento.
+        Exception: Para outros erros inesperados.
+    """
+    try:
+        # 1. Validar dados de entrada
+        validate_input_data(user_data)
+        
+        # 2. Carregar modelo e encoders
+        model, label_encoders, model_name, feature_columns = load_best_model()
+        
+        # 3. Converter dados do usuário em DataFrame
+        df_user = pd.DataFrame([user_data])
+        
+        # 4. Pré-processar dados categóricos usando os encoders
+        # A função preprocess_data já lida com a transformação de categóricas e validação de valores
+        X_user_processed_cats, _, _ = preprocess_data(df_user, fit_encoders=False, label_encoders=label_encoders)
+        
+        # 5. Alinhar as colunas do DataFrame de entrada com as colunas de treinamento
+        X_final_for_prediction = _align_features_for_prediction(X_user_processed_cats, feature_columns)
+        
+        # 6. Fazer previsão
+        prediction = model.predict(X_final_for_prediction)[0]
+        probability = model.predict_proba(X_final_for_prediction)[0]
+        
+        return {
+            'status': 'Aprovado' if prediction == 1 else 'Negado',
+            'probabilidade_aprovacao': float(probability[1]),
+            'probabilidade_negacao': float(probability[0]),
+            'modelo_utilizado': model_name,
+            'confianca': float(max(probability)),
+            # Adicione aqui outros campos que você queira retornar do user_data
+            # ou que sejam calculados a partir dele, como score_credito, taxa_juros_estimada, etc.
+            # Exemplo: 'score_credito': user_data.get('score_credito', 'N/A')
+        }
+        
+    except ValueError as ve:
+        logger.error(f"Erro de validação/pré-processamento na previsão: {ve}")
+        raise ve
+    except Exception as e:
+        logger.error(f"Erro inesperado na previsão detalhada: {e}")
+        raise Exception(f"Erro interno do servidor: {e}")
+
+# 
 # MAIN
-# ============================================================================
+# 
 
 if __name__ == "__main__":
     # Treinar modelos

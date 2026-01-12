@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import sqlite3
 
-from . import schemas
+from .schemas import user_schemas
 
 router = APIRouter(tags=["auth"])
 
@@ -61,15 +61,15 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise credentials_exception
     
     # ✅ Retornar um objeto User com os campos corretos
-    return schemas.User(
+    return user_schemas.User(
         id=1,  # Você precisará buscar do banco de dados
         email=email,
         username="username",  # Você precisará buscar do banco de dados
         is_active=True
     )
 
-@router.post("/register", response_model=schemas.Token)
-def register(user: schemas.UserCreate, conn = Depends(get_db)):
+@router.post("/register", response_model=user_schemas.Token)
+def register(user: user_schemas.UserCreate, conn = Depends(get_db)):
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -91,10 +91,10 @@ def register(user: schemas.UserCreate, conn = Depends(get_db)):
     conn.commit()
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(data={"sub": user.email}, expires_delta=access_token_expires)
-    return schemas.Token(access_token=access_token, token_type="bearer")
+    return user_schemas.Token(access_token=access_token, token_type="bearer")
 
-@router.post("/login", response_model=schemas.Token)
-def login(user: schemas.UserLogin, conn = Depends(get_db)):
+@router.post("/login", response_model=user_schemas.Token)
+def login(user: user_schemas.UserLogin, conn = Depends(get_db)):
     cursor = conn.cursor()
     cursor.execute("SELECT hashed_password FROM users WHERE email = ?", (user.email,))
     db_user = cursor.fetchone()
@@ -109,8 +109,8 @@ def login(user: schemas.UserLogin, conn = Depends(get_db)):
         data={"sub": user.email}, 
         expires_delta=access_token_expires
     )
-    return schemas.Token(access_token=access_token, token_type="bearer")
+    return user_schemas.Token(access_token=access_token, token_type="bearer")
 
-@router.get("/me", response_model=schemas.User)
-def read_users_me(current_user: schemas.User = Depends(get_current_user)):
+@router.get("/me", response_model=user_schemas.User)
+def read_users_me(current_user: user_schemas.User = Depends(get_current_user)):
     return current_user

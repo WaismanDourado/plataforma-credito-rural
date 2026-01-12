@@ -3,8 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 import os
 
+from .schemas import user_schemas
+
 # Imports relativos
-from . import schemas, database, ml_model, crud, models
+from . import database, ml_model, crud, models
 from .auth import router as auth_router  # Relativo OK
 from .auth import get_current_user  # Relativo OK
 # Cria dirs e tables
@@ -26,12 +28,12 @@ async def root():
     return {"message": "Backend OK! 🚀"}
 
 # ✅ FIX: Register com status 201 (Created)
-@app.post("/users/", response_model=schemas.User, status_code=201, tags=["Usuários"])  # Status 201 aqui!
-def create_user(user: schemas.UserCreate, db: Session = Depends(database.get_db)):
+@app.post("/users/", response_model=user_schemas.User, status_code=201, tags=["Usuários"])  # Status 201 aqui!
+def create_user(user: user_schemas.UserCreate, db: Session = Depends(database.get_db)):
     return crud.create_user(db, user)
 
-@app.get("/users/me", response_model=schemas.User, status_code=200, tags=["Usuários"])
-async def read_users_me(current_user: schemas.User = Depends(get_current_user)):
+@app.get("/users/me", response_model=user_schemas.User, status_code=200, tags=["Usuários"])
+async def read_users_me(current_user: user_schemas.User = Depends(get_current_user)):
     return current_user
 
 # ✅ FIX 404: Include router SEM prefix duplicado + debug print
