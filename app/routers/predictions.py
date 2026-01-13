@@ -1,18 +1,29 @@
+"""
+Prediction routes module.
+
+Handles all credit prediction endpoints with database persistence
+and JWT authentication.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import List
 
+from ..schemas import user_schemas
 from ..schemas.prediction_schema import (
     CreditPredictionInput,
     CreditPredictionOutput,
     PredictionStats
 )
-
-from .auth import get_current_user
+from ..auth import get_current_user
 from ..database import get_db
 from ..services.prediction_service import PredictionService
 
 router = APIRouter(prefix="/v1/predictions", tags=["prediction"])
+
+# ============================================
+# CREDIT APPROVAL PREDICTION
+# ============================================
 
 @router.post(
     "/credit-approval",
@@ -26,20 +37,29 @@ async def predict_credit_approval(
     current_user: user_schemas.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Faz previsão de aprovação de crédito rural."""
-    try:
-        service = PredictionService(db=db)
-        result = await service.predict(prediction_input, user_id=current_user.id)
-        return result
-    except ValueError as ve:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Erro na previsão: {str(ve)}"
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro interno ao processar previsão: {str(e)}"
-        )
-
-# ... outros endpoints de prediction
+    """
+    Faz previsão de aprovação de crédito rural.
+    
+    **Requer autenticação JWT**
+    
+    **Parâmetros:**
+    - `prediction_input`: Dados do cliente para previsão
+    
+    **Retorna:**
+    - `status`: Aprovado ou Negado
+    - `probabilidade_aprovacao`: Probabilidade de aprovação (0-1)
+    - `probabilidade_negacao`: Probabilidade de negação (0-1)
+    - `modelo_utilizado`: Nome do modelo (GBT ou XGBoost)
+    - `confianca`: Confiança da previsão (0-1)
+    
+    **Exemplo de uso:**
+    ```json
+    {
+        "idade": 35,
+        "renda_mensal": 5000.0,
+        "historico_credito": "bom",
+        "valor_emprestimo": 20000.0,
+        "prazo_meses": 24
+    }
+    ```
+    """
