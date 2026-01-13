@@ -7,6 +7,8 @@ from ..schemas.prediction_schema import (
     CreditPredictionOutput,
     PredictionStats
 )
+
+from .auth import get_current_user
 from ..database import get_db
 from ..services.prediction_service import PredictionService
 
@@ -21,13 +23,13 @@ router = APIRouter(prefix="/v1/predictions", tags=["prediction"])
 )
 async def predict_credit_approval(
     prediction_input: CreditPredictionInput,
-    user_id: int = Query(..., description="ID do usuário fazendo a previsão"),
+    current_user: user_schemas.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Faz previsão de aprovação de crédito rural."""
     try:
         service = PredictionService(db=db)
-        result = await service.predict(prediction_input, user_id=user_id)
+        result = await service.predict(prediction_input, user_id=current_user.id)
         return result
     except ValueError as ve:
         raise HTTPException(
