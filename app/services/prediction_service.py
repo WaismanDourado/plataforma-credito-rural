@@ -13,6 +13,7 @@ from app.schemas.prediction_schema import (
     PredictionDetails,
     PredictionStats
 )
+from app.database.models import Prediction, User
 
 # Configure logging
 logging.basicConfig(
@@ -25,33 +26,32 @@ class PredictionService:
     """
     Service class to handle business logic for credit prediction.
     Acts as a bridge between FastAPI routes and the ML model.
+    Persists predictions to the database for audit trail and analytics.
     """
 
-    _predictions_history: List[Dict[str, Any]] = []  # In-memory storage for demonstration
-    _prediction_count: int = 0
-    _total_confidence: float = 0.0
-    _total_approved: int = 0
-    _total_denied: int = 0
-    _last_updated_stats: datetime = datetime.now()
-
-    def __init__(self):
+    def __init__(self, db: Session):
         """
-        Initializes the PredictionService.
+        Initializes the PredictionService with a database session.
+        
+        Args:
+            db (Session): SQLAlchemy database session for persistence.
         """
+        self.db = db
         self.logger = logger
-        self.logger.info("PredictionService initialized.")
+        self.logger.info("PredictionService initialized with database session.")
 
     async def predict(
         self,
         prediction_input: CreditPredictionInput,
-        db: Optional[Session] = None
+        user_id: int
     ) -> CreditPredictionOutput:
         """
         Performs credit approval prediction based on user input.
+        Saves the prediction to the database for persistence.
 
         Args:
             prediction_input (CreditPredictionInput): Validated input data from the user.
-            db (Optional[Session]): Database session for saving predictions.
+            user_id (int): The ID of the user making the prediction.
 
         Returns:
             CreditPredictionOutput: A Pydantic model containing the prediction results.
@@ -59,7 +59,7 @@ class PredictionService:
         Raises:
             ValueError: If input data validation fails or an internal prediction error occurs.
         """
-        self.logger.info("Received request for credit approval prediction.")
+        self.logger.info(f"Received request for credit approval prediction from user {user_id}.")
         
         try:
             # Convert Pydantic model to dictionary for the ML model
@@ -76,9 +76,13 @@ class PredictionService:
             response = self._process_prediction_result(ml_prediction_result)
             self.logger.debug("Prediction result processed.")
 
-            # Save prediction to history (for stats demonstration)
-            self._save_prediction_to_history(response.model_dump())
-            self.logger.debug("Prediction saved to history.")
+            # Save prediction to database
+            prediction_db = self._save_prediction_to_database(
+                user_id=user_id,
+                input_data=ml_model_input,
+                prediction_result=response.model_dump()
+            )
+            self.logger.info(f"Prediction saved to database with ID: {prediction_db.id}")
 
             return response
 
@@ -125,77 +129,130 @@ class PredictionService:
             self.logger.error(f"Error processing ML prediction result: {e}", exc_info=True)
             raise ValueError(f"Failed to process prediction result: {e}")
 
-    def _save_prediction_to_history(self, prediction_data: Dict[str, Any]) -> None:
+    def _save_prediction_to_database(
+        self,
+        user_id: int,
+        input_data: Dict[str, Any],
+        prediction_result: Dict[str, Any]
+    ) -> Prediction:
         """
-        Saves the prediction data to an in-memory history for statistics.
-        In a production environment, this would interact with a database.
+        Saves the prediction data to the database for persistence and audit trail.
 
         Args:
-            prediction_data (Dict[str, Any]): The prediction data to save.
+            user_id (int): The ID of the user making the prediction.
+            input_data (Dict[str, Any]): The input data used for prediction.
+            prediction_result (Dict[str, Any]): The prediction result from the ML model.
+
+        Returns:
+            Prediction: The saved Prediction database object.
+
+        Raises:
+            ValueError: If the user doesn't exist or database operation fails.
         """
-        self._predictions_history.append(prediction_data)
-        
-        # Update aggregate statistics
-        self._prediction_count += 1
-        self._total_confidence += prediction_data.get("confianca", 0.0)
-        
-        if prediction_data.get("status") == "Aprovado":
-            self._total_approved += 1
-        elif prediction_data.get("status") == "Negado":
-            self._total_denied += 1
-            
-        self._last_updated_stats = datetime.now()
-        
-        self.logger.info(
-            f"Prediction saved to in-memory history. "
-            f"Total predictions: {self._prediction_count}"
-        )
+        try:
+            # Verify user exists
+            user = self.db.query(User).filter(User.id == user_id).first()
+            if not user:
+                raise ValueError(f"User with ID {user_id} not found")
+
+            # Create Prediction object
+            prediction = Prediction(
+                user_id=user_id,
+                input_data=input_data,
+                prediction_result=prediction_result,
+                created_at=datetime.utcnow()
+            )
+
+            # Save to database
+            self.db.add(prediction)
+            self.db.commit()
+            self.db.refresh(prediction)
+
+            self.logger.info(
+                f"Prediction saved to database. "
+                f"User ID: {user_id}, Prediction ID: {prediction.id}"
+            )
+            return prediction
+
+        except ValueError as ve:
+            self.logger.error(f"Validation error while saving prediction: {ve}")
+            self.db.rollback()
+            raise
+        except Exception as e:
+            self.logger.error(f"Database error while saving prediction: {e}", exc_info=True)
+            self.db.rollback()
+            raise ValueError(f"Failed to save prediction to database: {e}")
 
     async def get_prediction_stats(self) -> PredictionStats:
         """
         Returns aggregated statistics about all predictions made.
-        For now, this uses in-memory data.
+        Queries the database for accurate statistics.
 
         Returns:
             PredictionStats: A Pydantic model containing prediction statistics.
         """
-        self.logger.info("Retrieving prediction statistics.")
+        self.logger.info("Retrieving prediction statistics from database.")
         
-        if self._prediction_count == 0:
-            return PredictionStats(
-                total_predictions=0,
-                approved_count=0,
-                denied_count=0,
-                approval_rate=0.0,
-                average_confidence=0.0,
-                average_risk_score=0.0
+        try:
+            # Query all predictions from database
+            all_predictions = self.db.query(Prediction).all()
+            
+            if not all_predictions:
+                return PredictionStats(
+                    total_predictions=0,
+                    approved_count=0,
+                    denied_count=0,
+                    approval_rate=0.0,
+                    average_confidence=0.0,
+                    average_risk_score=0.0
+                )
+
+            # Calculate statistics
+            total_predictions = len(all_predictions)
+            approved_count = sum(
+                1 for p in all_predictions 
+                if p.prediction_result.get("status") == "Aprovado"
             )
+            denied_count = sum(
+                1 for p in all_predictions 
+                if p.prediction_result.get("status") == "Negado"
+            )
+            
+            approval_rate = (approved_count / total_predictions * 100) if total_predictions > 0 else 0.0
+            
+            # Calculate average confidence
+            confidences = [
+                p.prediction_result.get("confianca", 0) 
+                for p in all_predictions
+            ]
+            average_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+            
+            # Calculate average risk score
+            risk_scores = [
+                (1 - p.prediction_result.get("probabilidade_aprovacao", 0)) * 100 
+                for p in all_predictions
+            ]
+            average_risk_score = sum(risk_scores) / len(risk_scores) if risk_scores else 0.0
 
-        approval_rate = (self._total_approved / self._prediction_count) * 100
-        average_confidence = self._total_confidence / self._prediction_count
-        
-        # Calculate average risk score (inverse of approval probability)
-        risk_scores = [
-            (1 - p.get("probabilidade_aprovacao", 0)) * 100 
-            for p in self._predictions_history
-        ]
-        average_risk_score = sum(risk_scores) / len(risk_scores) if risk_scores else 0
+            stats = PredictionStats(
+                total_predictions=total_predictions,
+                approved_count=approved_count,
+                denied_count=denied_count,
+                approval_rate=round(approval_rate, 2),
+                average_confidence=round(average_confidence, 4),
+                average_risk_score=round(average_risk_score, 2)
+            )
+            
+            self.logger.debug(f"Prediction statistics: {stats.model_dump()}")
+            return stats
 
-        stats = PredictionStats(
-            total_predictions=self._prediction_count,
-            approved_count=self._total_approved,
-            denied_count=self._total_denied,
-            approval_rate=round(approval_rate, 2),
-            average_confidence=round(average_confidence, 4),
-            average_risk_score=round(average_risk_score, 2)
-        )
-        
-        self.logger.debug(f"Prediction statistics: {stats.model_dump()}")
-        return stats
+        except Exception as e:
+            self.logger.error(f"Error retrieving prediction statistics: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve prediction statistics: {e}")
 
     async def get_prediction(self, prediction_id: int) -> Optional[CreditPredictionOutput]:
         """
-        Retrieves a specific prediction from history by ID.
+        Retrieves a specific prediction from the database by ID.
 
         Args:
             prediction_id (int): The ID of the prediction to retrieve.
@@ -205,59 +262,88 @@ class PredictionService:
         """
         self.logger.info(f"Retrieving prediction with ID: {prediction_id}")
         
-        if 0 <= prediction_id < len(self._predictions_history):
-            prediction_data = self._predictions_history[prediction_id]
-            return CreditPredictionOutput(**prediction_data)
-        
-        self.logger.warning(f"Prediction with ID {prediction_id} not found")
-        return None
-
-# Instantiate the service for use in routes
-prediction_service = PredictionService()
-
-if __name__ == "__main__":
-    # Example usage (for testing the service directly)
-    import asyncio
-
-    async def test_service():
-        # Dummy data for testing
-        dummy_user_data = {
-            "area_total_ha": 100.0,
-            "area_produtiva_ha": 80.0,
-            "tempo_de_conta_anos": 5,
-            "receita_bruta_total_obtida_reais": 200000.0,
-            "endividamento_reais": 100000.0,
-            "valor_terras_reais": 500000.0,
-            "valor_maquinario_reais": 150000.0,
-            "valor_semoventes_reais": 50000.0,
-            "regiao": "Sul",
-            "tipo_atividade": "Agricultura",
-            "cliente_iniciante_credito_rural": False,
-            "indicador_cliente_com_dap_producao": True,
-            "tipo_garantia_principal": "Hipoteca de Terra",
-            "periodos_chuva_seca": "Chuva Normal",
-            "efeitos_el_nino_la_nina": "Normal",
-            "mes_operacao": "Junho",
-            "qtd_operacoes_rurais_anteriores": 2,
-            "valor_pretendido": 50000.0
-        }
-
-        print("\n--- Testing PredictionService ---")
         try:
-            # Create input
-            prediction_input = CreditPredictionInput(**dummy_user_data)
+            prediction = self.db.query(Prediction).filter(
+                Prediction.id == prediction_id
+            ).first()
             
-            # Test prediction
-            prediction_result = await prediction_service.predict(prediction_input)
-            print(f"\nPrediction Result: {prediction_result.model_dump_json(indent=2)}")
+            if not prediction:
+                self.logger.warning(f"Prediction with ID {prediction_id} not found")
+                return None
+            
+            # Convert database object to Pydantic model
+            return CreditPredictionOutput(**prediction.prediction_result)
 
-            # Test stats
-            stats = await prediction_service.get_prediction_stats()
-            print(f"\nPrediction Stats: {stats.model_dump_json(indent=2)}")
-
-        except ValueError as ve:
-            print(f"Service Error: {ve}")
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")
+            self.logger.error(f"Error retrieving prediction: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve prediction: {e}")
 
-    asyncio.run(test_service())
+    async def get_predictions_by_user(self, user_id: int) -> List[CreditPredictionOutput]:
+        """
+        Retrieves all predictions made by a specific user.
+
+        Args:
+            user_id (int): The ID of the user.
+
+        Returns:
+            List[CreditPredictionOutput]: List of predictions made by the user.
+        """
+        self.logger.info(f"Retrieving predictions for user ID: {user_id}")
+        
+        try:
+            predictions = self.db.query(Prediction).filter(
+                Prediction.user_id == user_id
+            ).order_by(Prediction.created_at.desc()).all()
+            
+            return [
+                CreditPredictionOutput(**p.prediction_result) 
+                for p in predictions
+            ]
+
+        except Exception as e:
+            self.logger.error(f"Error retrieving user predictions: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve user predictions: {e}")
+
+    async def get_predictions_by_user_paginated(
+        self,
+        user_id: int,
+        skip: int = 0,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Retrieves predictions for a user with pagination support.
+
+        Args:
+            user_id (int): The ID of the user.
+            skip (int): Number of records to skip.
+            limit (int): Maximum number of records to return.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing predictions and pagination info.
+        """
+        self.logger.info(f"Retrieving paginated predictions for user ID: {user_id}")
+        
+        try:
+            # Get total count
+            total = self.db.query(Prediction).filter(
+                Prediction.user_id == user_id
+            ).count()
+            
+            # Get paginated results
+            predictions = self.db.query(Prediction).filter(
+                Prediction.user_id == user_id
+            ).order_by(Prediction.created_at.desc()).offset(skip).limit(limit).all()
+            
+            return {
+                "total": total,
+                "skip": skip,
+                "limit": limit,
+                "predictions": [
+                    CreditPredictionOutput(**p.prediction_result) 
+                    for p in predictions
+                ]
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error retrieving paginated predictions: {e}", exc_info=True)
+            raise ValueError(f"Failed to retrieve paginated predictions: {e}")
