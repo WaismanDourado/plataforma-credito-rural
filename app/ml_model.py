@@ -365,6 +365,38 @@ def load_best_model(): # MODIFICADO: Retorna feature_columns
         raise
 
 # 
+# FUNÇÃO PARA COMPATIBILIDADE COM MAIN.PY
+# 
+
+def load_model_and_scaler():
+    """
+    Load model and scaler for compatibility with main.py.
+    
+    This function loads the best trained model and returns it along with
+    a scaler object (which may be None if not used in the current pipeline).
+    
+    Returns:
+        Tuple[Any, Any]: (model, scaler) - The loaded model and scaler
+        
+    Raises:
+        Exception: If model cannot be loaded
+    """
+    try:
+        # Load the best model and related components
+        model, label_encoders, model_name, feature_columns = load_best_model()
+        
+        # For now, scaler is None as we're using label encoders for categorical features
+        # If you need a StandardScaler or similar, you can load it here
+        scaler = None
+        
+        logger.info(f"✅ Model ({model_name}) and scaler loaded successfully")
+        return model, scaler
+        
+    except Exception as e:
+        logger.error(f"❌ Error loading model and scaler: {e}")
+        raise
+
+# 
 # FUNÇÃO DE PREVISÃO (PARA FASTAPI) - ORIGINAL
 # 
 
