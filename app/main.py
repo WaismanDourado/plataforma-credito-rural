@@ -9,11 +9,21 @@ from .schemas import user_schemas
 from . import database, ml_model, crud, models
 from .auth import router as auth_router  # Relativo OK
 from .auth import get_current_user  # Relativo OK
+from .routers import routers
+from .database import init_db
+
 # Cria dirs e tables
 os.makedirs(ml_model.MODEL_DIR, exist_ok=True)
 database.Base.metadata.create_all(bind=database.engine)
 
-app = FastAPI(title="Plataforma de Previsão de Crédito Rural")
+app = FastAPI(
+    title="Plataforma de Previsão de Crédito Rural",
+    description="API para previsão de crédito rural utilizando FastAPI e modelos de ML.",
+    version="1.0.0",
+)
+
+# Inicializa DB
+init_db()
 
 # CORS
 origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://192.168.1.217:3000"]
