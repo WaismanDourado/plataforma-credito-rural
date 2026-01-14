@@ -9,12 +9,12 @@ import logging
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
 
 from . import database, ml_model
 from .auth import router as auth_router
 from .routers import router as api_router
 from .database import init_db
+from .config import settings
 
 # Configure logging
 logging.basicConfig(
@@ -41,7 +41,9 @@ try:
     logger.info("✅ ML model loaded successfully")
 except Exception as e:
     logger.error(f"❌ Error loading ML model: {e}")
-    raise
+    logger.warning("⚠️  Application will continue but predictions may not work")
+    credit_model = None
+    credit_scaler = None
 
 # ============================================
 # FASTAPI APPLICATION
@@ -61,21 +63,15 @@ app = FastAPI(
 # ============================================
 
 # CORS Configuration
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://192.168.1.217:3000"
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-logger.info(f"✅ CORS configured for origins: {origins}")
+logger.info(f"✅ CORS configured for origins: {settings.CORS_ORIGINS}")
 
 # ============================================
 # ROUTERS
