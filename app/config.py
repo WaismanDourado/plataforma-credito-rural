@@ -1,81 +1,89 @@
 """
-Application configuration.
+Configuration module.
 
-This module loads configuration from environment variables.
-Uses simple os.getenv() instead of Pydantic Settings to avoid parsing issues.
+Handles application settings and environment variables.
 """
 
-import os
+from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import List
-from dotenv import load_dotenv
 
-# Carregar variáveis de ambiente do arquivo .env
-load_dotenv()
-
-
-class Settings:
+class Settings(BaseSettings):
     """
-    Application settings and configuration.
+    Application settings.
     
-    Simple configuration class that loads from environment variables.
-    No Pydantic complexity, just straightforward Python.
+    Loads configuration from environment variables.
     """
     
-    # 
-    # GENERAL APPLICATION SETTINGS
-    # 
+    # ============================================
+    # APPLICATION CONFIGURATION
+    # ============================================
     
-    APP_NAME: str = os.getenv("APP_NAME", "Plataforma de Crédito Rural")
-    APP_VERSION: str = os.getenv("APP_VERSION", "1.0.0")
-    DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
-    APP_ENV: str = os.getenv("APP_ENV", "development")
+    APP_NAME: str = Field(
+        default="Plataforma de Previsão de Crédito Rural",
+        env="APP_NAME"
+    )
+    APP_VERSION: str = Field(default="1.0.0", env="APP_VERSION")
+    APP_ENV: str = Field(default="development", env="APP_ENV")
+    DEBUG: bool = Field(default=True, env="DEBUG")
     
-    # 
+    # ============================================
     # DATABASE CONFIGURATION
-    # 
+    # ============================================
     
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./test.db")
+    DATABASE_URL: str = Field(default="sqlite:///./test.db", env="DATABASE_URL")
+    DATABASE_ECHO: bool = Field(default=False, env="DATABASE_ECHO")
     
-    # 
-    # FILE PATHS
-    # 
+    # ============================================
+    # JWT CONFIGURATION
+    # ============================================
     
-    MODEL_DIR: str = os.getenv("MODEL_DIR", "app/models")
-    DATA_DIR: str = os.getenv("DATA_DIR", "data/raw")
+    SECRET_KEY: str = Field(
+        default="sua-chave-secreta-super-segura-aqui-mude-em-producao",
+        env="SECRET_KEY"
+    )
+    ALGORITHM: str = Field(default="HS256", env="ALGORITHM")
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
     
-    # 
-    # LOGGING CONFIGURATION
-    # 
-    
-    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    
-    # 
+    # ============================================
     # CORS CONFIGURATION
-    # 
+    # ============================================
     
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8000",
-        "http://127.0.0.1:5173",
-    ]
+    CORS_ORIGINS: List[str] = Field(
+        default=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://192.168.1.217:3000",
+            "http://localhost:8000",
+            "http://localhost:5173"
+        ],
+        env="CORS_ORIGINS"
+    )
     
-    # 
+    # ============================================
     # API CONFIGURATION
-    # 
+    # ============================================
     
-    API_PREFIX: str = os.getenv("API_PREFIX", "/api/v1")
+    API_PREFIX: str = Field(default="/api/v1", env="API_PREFIX")
     
-    # 
-    # SECURITY CONFIGURATION
-    # 
+    # ============================================
+    # FILE PATHS CONFIGURATION
+    # ============================================
     
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    MODEL_DIR: str = Field(default="app/models", env="MODEL_DIR")
+    DATA_DIR: str = Field(default="data/raw", env="DATA_DIR")
+    
+    # ============================================
+    # LOGGING CONFIGURATION
+    # ============================================
+    
+    LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
+    
+    class Config:
+        """Pydantic config."""
+        env_file = ".env"
+        case_sensitive = True
+        extra = "ignore"  # Ignora campos extras do .env
 
-
-# Global instance of settings
+# Create settings instance
 settings = Settings()
